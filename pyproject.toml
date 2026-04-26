@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "directus-skill"
+version = "1.4.0"
+description = "Universal Directus CMS GraphQL client for all AI agents"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Directus Skill Contributors", email = "info@example.com"}
+]
+keywords = ["directus", "cms", "graphql", "ai", "skill"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+[project.scripts]
+directus = "directus.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["directus*"]
+
+[tool.setuptools.package-data]
+directus = ["*.md"]
