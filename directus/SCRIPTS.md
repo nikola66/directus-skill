@@ -59,6 +59,7 @@ client.insert({'name': 'Test', 'slug': 'test'}, collection='Custom_Collection')
 
 - All tools use `skills.directus.client.DirectusClient` singleton (shared config via env)
 - Soft-delete is default — never hard-delete unless absolutely certain
+- Soft-delete auto-detects the archive field: legacy collections with a `status` field get `status = "Removed"`; Directus 12+ collections with an `archived` boolean get `archived = true`. Override with `archive_field=`/`archive_value=` if needed.
 - Email addresses are the unique key (case-insensitive) for Lead-specific scripts
-- Status values containing "Contacted" mark a lead as already reached — dedup logic respects this
+- Status values containing "Contacted" mark a lead as already reached — dedup logic respects this. For Directus 12 collections using the boolean `archived` field, pass `status_is_boolean=True` to the contacted helpers (e.g. `is_contacted`, `get_contacted_emails`).
 - To adapt these scripts for other schemas, update the `collection` parameter and field names accordingly

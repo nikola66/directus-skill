@@ -1,6 +1,8 @@
 """
 Directus GraphQL Client — universal CRUD for any Directus collection.
 
+Compatible with Directus 10, 11 and 12 (current).
+
 Environment
 -----------
 DIRECTUS_URL
@@ -26,7 +28,7 @@ Quick Start
     record = client.insert({'title': 'Hello'}, collection='Posts')
     results = client.get(fields=['id', 'title'], limit=10, collection='Posts')
     client.update(id, {'status': 'draft'}, collection='Posts')
-    client.delete(id, collection='Posts')
+    client.delete(id, collection='Posts')  # soft-delete auto-detects status/archived
 
     # CLI
     python -m directus query --collection Posts --fields id title --limit 5
@@ -34,7 +36,7 @@ Quick Start
     python -m directus insert --collection Posts --data '{"title":"New"}'
 
 Exports
-------
+-------
     DirectusClient    — main client class
     DirectusError   — typed exception with message, details, status_code
 """
@@ -46,4 +48,4 @@ __all__ = [
     'DirectusError',
 ]
 
-__version__ = '1.4.0'
+__version__ = '1.5.0'

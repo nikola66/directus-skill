@@ -27,7 +27,13 @@ from pathlib import Path
 
 # Add skill to path (when run as script)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from skills.directus.client import DirectusClient, DirectusError
+try:
+    # Import as the 'skills.directus' package (monorepo convention)
+    from skills.directus.client import DirectusClient, DirectusError
+except ImportError:
+    # Fallback: import as the standalone 'directus' package in this repo
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from directus.client import DirectusClient, DirectusError
 
 # ─── Load ~/.hermes/.env if present (simple key=value parser, no deps needed) ───
 _env_path = Path.home() / '.hermes' / '.env'

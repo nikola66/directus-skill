@@ -5,6 +5,16 @@ Directus GraphQL Client — generic CRUD operations for any collection.
 This is a universal Directus client that works with any collection schema.
 Previously hardcoded for CRM 'Leads' — now fully collection-agnostic.
 
+Compatible with Directus 10, 11 and 12 (current). Notable version notes:
+- Directus 12 replaces the string 'status' field with a boolean 'archived'
+  field on newly created collections. Soft-delete auto-detects which field
+  a collection uses (override with archive_field/archive_value if needed).
+- Directus 12 restricts /server/health to authenticated users — use ping()
+  for public liveness checks.
+- Directus 11+ changed GraphQL primary key types from String to ID; this
+  client passes inline literals so it works on all versions.
+- Versioned collections use ?version=published (v12) — 'main' still works.
+
 Usage:
     from directus.client import DirectusClient
 
@@ -30,14 +40,14 @@ They accept custom field names to adapt to other schemas.
 """
 
 import os, sys, json, ssl, urllib.request, urllib.error
-from typing import Optional, Dict, List, Set, Any
+from typing import Optional, Dict, List, Set, Any, Tuple
 from dataclasses import dataclass
 
 DIRECTUS_URL = os.getenv('DIRECTUS_URL') or os.getenv('DIRECTUS_API_URL', 'https://hub.aratech.ae')
 API_TOKEN = os.getenv('DIRECTUS_API_TOKEN')
 ADMIN_TOKEN = os.getenv('DIRECTUS_ADMIN_TOKEN')
 DEFAULT_COLLECTION = os.getenv('DIRECTUS_DEFAULT_COLLECTION')
-USER_AGENT = 'Directus-Skill/1.0'
+USER_AGENT = 'Directus-Skill/1.5.0'
 
 
 @dataclass
@@ -60,6 +70,7 @@ class DirectusClient:
         self.token = token or API_TOKEN
         self.admin_token = admin_token or ADMIN_TOKEN
         self.default_collection = collection or DEFAULT_COLLECTION
+        self._archive_cache: Dict[str, Tuple] = {}
         
         if not self.token:
             raise DirectusError(
@@ -201,20 +212,60 @@ class DirectusClient:
         result = self._graphql(query)
         return result.get(f'update_{coll}_item', {})
 
-    def delete(self, id: str, hard: bool = False, collection: str = None) -> bool:
+    def delete(self, id: str, hard: bool = False, collection: str = None,
+               archive_field: str = None, archive_value: Any = None) -> bool:
         """
         Delete a record.
-        hard=False (default): soft-delete by setting status='Removed' (only works if collection has 'status' field)
-        hard=True: permanently delete via API
+
+        hard=False (default): soft-delete. The archive field is auto-detected:
+        - 'status' (string) on legacy collections → set to 'Removed'
+        - 'archived' (boolean) on collections created with Directus 12+ → set True
+        Override the detection with archive_field= / archive_value=.
+
+        hard=True: permanently delete via API.
         """
         coll = self._resolve_collection(collection)
         if hard:
             query = f'mutation {{ delete_{coll}_item(id: "{id}") {{ id }} }}'
         else:
-            query = f'mutation {{ update_{coll}_item(id: "{id}", data: {{ status: "Removed" }}) {{ id }} }}'
+            field, value = archive_field, archive_value
+            if field is None:
+                field, value = self._detect_archive_field(coll)
+            if field is None:
+                raise DirectusError(
+                    message=f"Cannot soft-delete: collection '{coll}' has no status/archived field",
+                    details="Pass archive_field= and archive_value= to delete(), or use hard=True",
+                )
+            query = (f'mutation {{ update_{coll}_item(id: "{id}", '
+                     f'data: {{ {field}: {self._to_graphql_value(value)} }}) {{ id }} }}')
         result = self._graphql(query)
         key = f'delete_{coll}_item' if hard else f'update_{coll}_item'
         return 'id' in result.get(key, {})
+
+    def _detect_archive_field(self, collection: str) -> Tuple:
+        """Detect the soft-delete (archive) field used by a collection.
+
+        Directus 12 replaced the string 'status' field with a boolean 'archived'
+        field on newly created collections; legacy collections keep 'status'.
+        Prefers 'status', falls back to 'archived', then (None, None).
+        If the fields endpoint is inaccessible, assumes the legacy 'status'
+        behavior. Result is cached per collection for the client lifetime.
+        """
+        if collection in self._archive_cache:
+            return self._archive_cache[collection]
+        try:
+            fields = self._rest(f'fields/{collection}', 'GET').get('data', [])
+            names = {f.get('field') for f in fields if isinstance(f, dict)}
+            if 'status' in names:
+                result = ('status', 'Removed')
+            elif 'archived' in names:
+                result = ('archived', True)
+            else:
+                result = (None, None)
+        except DirectusError:
+            result = ('status', 'Removed')
+        self._archive_cache[collection] = result
+        return result
 
     def count(self, filters: Optional[Dict] = None, collection: str = None) -> int:
         """Return total record count, optionally filtered."""
@@ -236,8 +287,13 @@ class DirectusClient:
                      email_field: str = 'Lead_Email',
                      status_field: str = 'status',
                      status_contains: str = 'Contacted',
+                     status_is_boolean: bool = False,
                      collection: str = None) -> bool:
-        """Check if an email exists with status containing the given keyword."""
+        """Check if an email exists with status containing the given keyword.
+
+        For Directus 12 collections that use the boolean 'archived' field instead
+        of a string 'status', pass status_field='archived', status_is_boolean=True.
+        """
         coll = self._resolve_collection(collection)
         records = self.get(
             fields=['id', status_field],
@@ -245,16 +301,32 @@ class DirectusClient:
             limit=5,
             collection=coll
         )
-        return any(status_contains in rec.get(status_field, '') for rec in records)
+        if status_is_boolean:
+            return any(isinstance(rec.get(status_field), bool) and rec.get(status_field) for rec in records)
+        needle = status_contains.lower()
+        return any(needle in str(rec.get(status_field, '')).lower() for rec in records)
+
+    def _contacted_filter(self, status_field: str, status_contains: str,
+                          status_is_boolean: bool) -> str:
+        """Build a GraphQL filter fragment matching 'contacted' records.
+
+        Boolean fields (e.g. 'archived' in Directus 12) use _eq: true; string
+        status fields use _contains for partial keyword matching.
+        """
+        if status_is_boolean:
+            return f'{{{status_field}: {{_eq: true}}}}'
+        return f'{{{status_field}: {{_contains: "{status_contains}"}}}}'
 
     def get_contacted_emails(self,
                              email_field: str = 'Lead_Email',
                              status_field: str = 'status',
                              status_contains: str = 'Contacted',
+                             status_is_boolean: bool = False,
                              collection: str = None) -> Set[str]:
-        """All unique email addresses where status contains keyword."""
+        """All unique email addresses where status contains keyword (or is truthy)."""
         coll = self._resolve_collection(collection)
-        query = f'query {{ {coll}(filter: {{{status_field}: {{_contains: "{status_contains}"}}}}) {{ {email_field} }} }}'
+        query = (f'query {{ {coll}(filter: {self._contacted_filter(status_field, status_contains, status_is_boolean)})'
+                 f' {{ {email_field} }} }}')
         result = self._graphql(query)
         emails = set()
         for rec in result.get(coll, []):
@@ -268,12 +340,15 @@ class DirectusClient:
                               website_field: str = 'Lead_Website',
                               status_field: str = 'status',
                               status_contains: str = 'Contacted',
+                              status_is_boolean: bool = False,
                               collection: str = None) -> Set[str]:
         """Extract unique domains from contacted records (email + website)."""
-        emails = self.get_contacted_emails(email_field, status_field, status_contains, collection)
+        emails = self.get_contacted_emails(email_field, status_field, status_contains,
+                                           status_is_boolean, collection)
         domains = {e.split('@')[1].lower() for e in emails if '@' in e}
         coll = self._resolve_collection(collection)
-        query = f'query {{ {coll}(filter: {{{status_field}: {{_contains: "{status_contains}"}}}}) {{ {website_field} }} }}'
+        query = (f'query {{ {coll}(filter: {self._contacted_filter(status_field, status_contains, status_is_boolean)})'
+                 f' {{ {website_field} }} }}')
         result = self._graphql(query)
         for rec in result.get(coll, []):
             website = rec.get(website_field, '') or ''
@@ -306,11 +381,33 @@ class DirectusClient:
     # ─── Utilities ──────────────────────────────────────────────────────────────
 
     def health_check(self) -> bool:
-        """Verify Directus instance is reachable and API token is valid."""
+        """Verify Directus instance is reachable and API token is valid.
+
+        Uses an authenticated GraphQL introspection query, so it confirms both
+        connectivity and token validity.
+        """
         try:
             self._graphql('query { __typename }')
             return True
         except DirectusError:
+            return False
+
+    def ping(self) -> bool:
+        """Public liveness check via GET /server/ping.
+
+        Directus 12 restricted /server/health to authenticated users, so use
+        ping() for unauthenticated liveness checks. It does NOT validate tokens.
+        """
+        try:
+            req = urllib.request.Request(
+                f'{self.url}/server/ping',
+                method='GET',
+                headers={'User-Agent': USER_AGENT}
+            )
+            ctx = ssl.create_default_context()
+            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                return resp.status == 200
+        except Exception:
             return False
 
     # ─── Collection Management (Admin) ──────────────────────────────────────────
@@ -360,6 +457,11 @@ class DirectusClient:
 
         Payload structure is strict — both collection-level and field-level must
         include 'schema' and 'meta' keys, otherwise Directus returns 403 FORBIDDEN.
+
+        Directus 12 note: collections created without an explicit 'status' string
+        field get a boolean 'archived' field instead. Add a 'status' field for
+        legacy behavior, or an 'archived' boolean to match Directus 12 defaults.
+        Soft-delete (delete(hard=False)) auto-detects either.
 
         Args:
             collection: Name of the collection to create

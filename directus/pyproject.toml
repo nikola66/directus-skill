@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "directus-skill"
-version = "1.4.0"
+version = "1.5.0"
 description = "Universal Directus CMS GraphQL client for all AI agents"
 readme = "README.md"
 requires-python = ">=3.9"

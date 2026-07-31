@@ -7,6 +7,7 @@ Usage:
     python3 -m directus count --collection Leads
     python3 -m directus insert --collection Blog_Tags --data '{"name":"Tech","slug":"tech"}'
     python3 -m directus health-check
+    python3 -m directus ping
 """
 
 import argparse
@@ -57,9 +58,16 @@ def main():
     d.add_argument('--collection', required=True)
     d.add_argument('--id', required=True, help='Record ID')
     d.add_argument('--hard', action='store_true', help='Hard delete (permanent)')
+    d.add_argument('--soft-field', default=None,
+                   help='Field used for soft-delete (default: auto-detect status/archived)')
+    d.add_argument('--soft-value', default=None,
+                   help='Value to set for soft-delete (default: "Removed" for status, true for archived)')
 
     # Health check
-    h = sub.add_parser('health-check', help='Check Directus connectivity')
+    h = sub.add_parser('health-check', help='Check Directus connectivity (authenticated)')
+
+    # Ping
+    p = sub.add_parser('ping', help='Public liveness check (/server/ping)')
 
     # List collections
     l = sub.add_parser('collections', help='List all collections')
@@ -98,12 +106,31 @@ def main():
             print(json.dumps(result, indent=2, default=str))
 
         elif args.cmd == 'delete':
-            result = client.delete(args.id, hard=args.hard, collection=args.collection)
+            soft_value = None
+            if args.soft_field and args.soft_value is None:
+                parser.error('--soft-value is required when --soft-field is provided')
+            if args.soft_value is not None:
+                try:
+                    soft_value = json.loads(args.soft_value)
+                except Exception:
+                    soft_value = args.soft_value
+            result = client.delete(
+                args.id,
+                hard=args.hard,
+                collection=args.collection,
+                archive_field=args.soft_field,
+                archive_value=soft_value,
+            )
             print(f"Deleted: {result}")
 
         elif args.cmd == 'health-check':
             ok = client.health_check()
             print(f"Health check: {'OK' if ok else 'FAILED'}")
+            sys.exit(0 if ok else 1)
+
+        elif args.cmd == 'ping':
+            ok = client.ping()
+            print(f"Ping: {'OK' if ok else 'FAILED'}")
             sys.exit(0 if ok else 1)
 
         elif args.cmd == 'collections':
